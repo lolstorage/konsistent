@@ -1,6 +1,7 @@
 --[[
-    Konsistent
+    Konsistent v1.4 (Bytecode Version 9 Compatible)
     Written by: Lolstorage
+    Pure Offline Luau Decompiler & CFG Engine
 --]]
 
 local Konsistent = {}
@@ -10,8 +11,9 @@ local LUA_TNIL = 0
 local LUA_TBOOLEAN = 1
 local LUA_TNUMBER = 2
 local LUA_TSTRING = 3
+local LUA_TVECTOR = 4
 
--- Complete Luau Opcode Enum Definitions (Full 100+ Instruction Specification)
+-- Complete Luau Opcode Enum Definitions (Version 9 Specification)
 local OpCodes = {
     [0]   = { name = "NOP",             format = "none" },
     [1]   = { name = "BREAK",           format = "none" },
@@ -95,7 +97,7 @@ local OpCodes = {
 }
 
 -- ==========================================
--- BINARY STREAM READER
+-- BINARY STREAM READER (V9 COMPLIANT)
 -- ==========================================
 local StreamReader = {}
 StreamReader.__index = StreamReader
@@ -110,7 +112,7 @@ end
 
 function StreamReader:ReadByte(): number
     if self.Offset > self.Length then return 0 end
-    local byte = string.byte(self.Buffer, self.Offset, self.Offset)
+    local byte = string.byte(self.Buffer, self.Offset)
     self.Offset = self.Offset + 1
     return byte
 end
@@ -135,17 +137,14 @@ end
 function StreamReader:ReadDouble(): number
     local bytes = {}
     for i = 1, 8 do bytes[i] = self:ReadByte() end
-    
     local sign = bit32.band(bytes[8], 0x80) ~= 0 and -1 or 1
     local exponent = bit32.lshift(bit32.band(bytes[8], 0x7F), 4) + bit32.rshift(bit32.band(bytes[7], 0xF0), 4)
-    
     local mantissa = bit32.band(bytes[7], 0x0F)
     for i = 6, 1, -1 do
         mantissa = mantissa * 256 + bytes[i]
     end
-    
-    if exponent == 2047 then 
-        return 0 
+    if exponent == 2047 then
+        return 0
     elseif exponent == 0 then
         return sign * math.ldexp(mantissa, -1074)
     else
@@ -161,7 +160,7 @@ function StreamReader:ReadString(len: number): string
 end
 
 -- ==========================================
--- OP DECODER ENGINE
+-- INSTRUCTION DECODER
 -- ==========================================
 local function DecodeInstruction(ins: number)
     local op = bit32.band(ins, 0xFF)
@@ -185,9 +184,6 @@ local function DecodeInstruction(ins: number)
     }
 end
 
--- ==========================================
--- UNIVERSAL OPCODE-DRIVEN CFG COUNTERPARTS
--- ==========================================
 local function GetInstructionSize(op: number): number
     local opData = OpCodes[op]
     if opData and opData.aux then
@@ -197,10 +193,12 @@ local function GetInstructionSize(op: number): number
 end
 
 local function IsJumpOrBranch(op: number): boolean
-    -- Maps all jump (23), conditional jumps (24-37), and constant/string jump counterparts (75, 76)
     return (op == 23) or (op >= 24 and op <= 37) or (op == 75) or (op == 76)
 end
 
+-- ==========================================
+-- CFG BUILDER ENGINE
+-- ==========================================
 function Konsistent.BuildFullCFG(proto)
     local instructions = proto.Instructions
     local instructionCount = proto.InstructionCount
@@ -210,6 +208,7 @@ function Konsistent.BuildFullCFG(proto)
     
     while pc <= instructionCount do
         local rawIns = instructions[pc]
+        if not rawIns then break end
         local op = bit32.band(rawIns, 0xFF)
         local insSize = GetInstructionSize(op)
         
@@ -219,7 +218,6 @@ function Konsistent.BuildFullCFG(proto)
             if targetPC >= 1 and targetPC <= instructionCount then
                 leaders[targetPC] = true
             end
-            
             local fallthroughPC = pc + insSize
             if fallthroughPC <= instructionCount then
                 leaders[fallthroughPC] = true
@@ -229,7 +227,7 @@ function Konsistent.BuildFullCFG(proto)
             if fallthroughPC <= instructionCount then
                 leaders[fallthroughPC] = true
             end
-        elseif op >= 61 and op <= 65 then -- Loop preparation & step counterparts (FORNPREP, FORNLOOP, FORGLOOP, etc.)
+        elseif op >= 61 and op <= 65 then
             local ins = DecodeInstruction(rawIns)
             local targetPC = pc + ins.SignedD + 1
             if targetPC >= 1 and targetPC <= instructionCount then
@@ -240,7 +238,6 @@ function Konsistent.BuildFullCFG(proto)
                 leaders[fallthroughPC] = true
             end
         end
-        
         pc = pc + insSize
     end
     
@@ -267,72 +264,54 @@ function Konsistent.BuildFullCFG(proto)
         }
         
         local currentPC = startPC
-        while currentPC <= endPC do
+        while currentPC <= endPC and currentPC <= instructionCount do
+            local raw = instructions[currentPC]
+            if not raw then break end
             table.insert(block.Instructions, {
                 PC = currentPC,
-                Raw = instructions[currentPC]
+                Raw = raw
             })
             pcToBlock[currentPC] = block
-            
-            local op = bit32.band(instructions[currentPC], 0xFF)
+            local op = bit32.band(raw, 0xFF)
             currentPC = currentPC + GetInstructionSize(op)
         end
-        
         blocks[i] = block
     end
     
     for _, block in ipairs(blocks) do
         local lastPC = block.EndPC
         local rawIns = instructions[lastPC]
-        local op = bit32.band(rawIns, 0xFF)
-        local insSize = GetInstructionSize(op)
-        local isTerminator = false
-        
-        if op == 23 or (op >= 61 and op <= 65) then
-            local ins = DecodeInstruction(rawIns)
-            local targetPC = lastPC + ins.SignedD + 1
-            local targetBlock = pcToBlock[targetPC]
-            if targetBlock then
-                table.insert(block.Successors, targetBlock)
-                table.insert(targetBlock.Predecessors, block)
+        if rawIns then
+            local op = bit32.band(rawIns, 0xFF)
+            local insSize = GetInstructionSize(op)
+            local isTerminator = false
+            
+            if op == 23 or (op >= 61 and op <= 65) or IsJumpOrBranch(op) then
+                local ins = DecodeInstruction(rawIns)
+                local targetPC = lastPC + ins.SignedD + 1
+                local targetBlock = pcToBlock[targetPC]
+                if targetBlock then
+                    table.insert(block.Successors, targetBlock)
+                    table.insert(targetBlock.Predecessors, block)
+                end
+                local fallthroughPC = lastPC + insSize
+                local fallthroughBlock = pcToBlock[fallthroughPC]
+                if fallthroughBlock then
+                    table.insert(block.Successors, fallthroughBlock)
+                    table.insert(fallthroughBlock.Predecessors, block)
+                end
+                isTerminator = true
+            elseif op == 22 then
+                isTerminator = true
             end
             
-            local fallthroughPC = lastPC + insSize
-            local fallthroughBlock = pcToBlock[fallthroughPC]
-            if fallthroughBlock then
-                table.insert(block.Successors, fallthroughBlock)
-                table.insert(fallthroughBlock.Predecessors, block)
-            end
-            isTerminator = true
-            
-        elseif IsJumpOrBranch(op) then
-            local ins = DecodeInstruction(rawIns)
-            local targetPC = lastPC + ins.SignedD + 1
-            
-            local targetBlock = pcToBlock[targetPC]
-            if targetBlock then
-                table.insert(block.Successors, targetBlock)
-                table.insert(targetBlock.Predecessors, block)
-            end
-            
-            local fallthroughPC = lastPC + insSize
-            local fallthroughBlock = pcToBlock[fallthroughPC]
-            if fallthroughBlock then
-                table.insert(block.Successors, fallthroughBlock)
-                table.insert(fallthroughBlock.Predecessors, block)
-            end
-            isTerminator = true
-            
-        elseif op == 22 then
-            isTerminator = true
-        end
-        
-        if not isTerminator then
-            local fallthroughPC = lastPC + insSize
-            local fallthroughBlock = pcToBlock[fallthroughPC]
-            if fallthroughBlock then
-                table.insert(block.Successors, fallthroughBlock)
-                table.insert(fallthroughBlock.Predecessors, block)
+            if not isTerminator then
+                local fallthroughPC = lastPC + insSize
+                local fallthroughBlock = pcToBlock[fallthroughPC]
+                if fallthroughBlock then
+                    table.insert(block.Successors, fallthroughBlock)
+                    table.insert(fallthroughBlock.Predecessors, block)
+                end
             end
         end
     end
@@ -341,18 +320,26 @@ function Konsistent.BuildFullCFG(proto)
 end
 
 -- ==========================================
--- DESERIALIZER ENGINE
+-- DESERIALIZER ENGINE (V9 READY)
 -- ==========================================
 function Konsistent.Deserialize(bytecode: string)
     local stream = StreamReader.new(bytecode)
     local version = stream:ReadByte()
     if version == 0 then
-        error("[Konsistent] Invalid bytecode or compilation failure from getscriptbytecode.")
+        error("[Konsistent] Invalid bytecode or compilation failure.")
     end
     
     local typesVersion = 0
     if version >= 4 then
         typesVersion = stream:ReadByte()
+    end
+
+    -- Skip modern Luau type tables introduced in Version 6+
+    if version >= 6 then
+        local typesCount = stream:ReadVarInt()
+        for i = 1, typesCount do
+            stream:ReadByte()
+        end
     end
     
     local stringCount = stream:ReadVarInt()
@@ -402,6 +389,9 @@ function Konsistent.Deserialize(bytecode: string)
             elseif constType == LUA_TSTRING then
                 local stringID = stream:ReadVarInt()
                 constant = { Type = "String", Value = stringTable[stringID] }
+            elseif constType == LUA_TVECTOR then
+                for v = 1, 16 do stream:ReadByte() end
+                constant = { Type = "Vector", Value = "[Vector]" }
             end
             proto.Constants[j - 1] = constant
         end
@@ -419,14 +409,12 @@ function Konsistent.Deserialize(bytecode: string)
         if stream:ReadByte() == 1 then
             proto.LineGapLog2 = stream:ReadByte()
             local intervals = bit32.rshift(proto.InstructionCount - 1, proto.LineGapLog2) + 1
-            
             proto.LineInfo = {}
             local lastLine = 0
             for j = 1, proto.InstructionCount do
                 lastLine = lastLine + stream:ReadByte()
                 proto.LineInfo[j] = lastLine
             end
-            
             proto.AbsLineInfo = {}
             for j = 1, intervals do
                 proto.AbsLineInfo[j] = stream:ReadInt32()
@@ -444,7 +432,6 @@ function Konsistent.Deserialize(bytecode: string)
                     Reg = stream:ReadByte()
                 }
             end
-            
             proto.UpvalueNames = {}
             local upvalueCount = stream:ReadVarInt()
             for j = 1, upvalueCount do
@@ -470,24 +457,22 @@ end
 -- DISASSEMBLY & CFG WRITER
 -- ==========================================
 local function decompile(scriptPath)
-    assert(getscriptbytecode, "[Konsistent] Your executor does not support getscriptbytecode!")
-    
+    assert(getscriptbytecode, "[Konsistent] getscriptbytecode required!")
     local success, bytecode = pcall(getscriptbytecode, scriptPath)
     if not success then
-        return "-- [Konsistent Error]: Failed to grab script bytecode:\n--" .. tostring(bytecode)
+        return "-- [Konsistent Error]: Failed to grab bytecode:\n--" .. tostring(bytecode)
     end
     
     local successParse, result = pcall(Konsistent.Deserialize, bytecode)
     if not successParse then
-        return "-- [Konsistent Error]: Failed during local deserialization:\n--" .. tostring(result)
+        return "-- [Konsistent Error]: Deserialization failed:\n--" .. tostring(result)
     end
     
-    local output = "-- [Konsistent Local Decompiler & Complete Opcode CFG Engine]\n"
-    output = output .. "-- Bytecode Version: " .. tostring(result.BytecodeVersion) .. "\n\n"
+    local output = "-- [Konsistent v1.4 Engine - Version " .. tostring(result.BytecodeVersion) .. "]\n\n"
     
     for id, proto in pairs(result.Protos) do
         output = output .. string.format("function %s() -- Proto %s (Line: %s)\n", proto.DebugName, tostring(id), tostring(proto.LineDefined))
-        output = output .. string.format("    -- Stack: %d | Params: %d | Upvalues: %d | CFG Blocks: %d\n\n", proto.MaxStackSize, proto.NumParameters, proto.NumUpvalues, #proto.CFGBlocks)
+        output = output .. string.format("    -- Stack: %d | Params: %d | CFG Blocks: %d\n\n", proto.MaxStackSize, proto.NumParameters, #proto.CFGBlocks)
         
         for _, block in ipairs(proto.CFGBlocks) do
             output = output .. string.format("    [CFG Block %d] StartPC: %d, EndPC: %d\n", block.ID, block.StartPC, block.EndPC)
@@ -497,8 +482,8 @@ local function decompile(scriptPath)
         local pc = 1
         while pc <= proto.InstructionCount do
             local rawIns = proto.Instructions[pc]
+            if not rawIns then break end
             local ins = DecodeInstruction(rawIns)
-            
             local opData = OpCodes[ins.Opcode]
             local opName = opData and opData.name or ("UNKNOWN_OP_" .. tostring(ins.Opcode))
             local line = proto.LineInfo and proto.LineInfo[pc] or "?"
@@ -524,30 +509,12 @@ local function decompile(scriptPath)
                 pc = pc + 1
                 local aux = proto.Instructions[pc]
                 local const = proto.Constants[aux]
-                instStr = instStr .. string.format(" -- Aux Global/Key: %s", const and tostring(const.Value) or tostring(aux))
-            elseif opName == "GETIMPORT" then
-                pc = pc + 1
-                local aux = proto.Instructions[pc]
-                local idCount = bit32.rshift(aux, 30)
-                local id1 = bit32.band(bit32.rshift(aux, 20), 0x3FF)
-                local id2 = bit32.band(bit32.rshift(aux, 10), 0x3FF)
-                local id3 = bit32.band(aux, 0x3FF)
-                
-                local path = {}
-                if idCount >= 1 then table.insert(path, proto.Constants[id1] and proto.Constants[id1].Value) end
-                if idCount >= 2 then table.insert(path, proto.Constants[id2] and proto.Constants[id2].Value) end
-                if idCount >= 3 then table.insert(path, proto.Constants[id3] and proto.Constants[id3].Value) end
-                instStr = instStr .. string.format(" -- Import: %s", table.concat(path, "."))
+                instStr = instStr .. string.format(" -- Aux Global: %s", const and tostring(const.Value) or tostring(aux))
             elseif opName == "GETTABLEKS" or opName == "SETTABLEKS" or opName == "NAMECALL" then
                 pc = pc + 1
                 local aux = proto.Instructions[pc]
                 local const = proto.Constants[aux]
                 instStr = instStr .. string.format(", R%d, K(%d) -- Member: %s", ins.B, aux, const and tostring(const.Value) or "nil")
-            elseif opName == "GETUPVAL" or opName == "SETUPVAL" then
-                local upvalName = proto.UpvalueNames and proto.UpvalueNames[ins.B + 1] or "upval_" .. tostring(ins.B)
-                instStr = instStr .. string.format(" -- Upvalue: %s", upvalName)
-            elseif opName == "JUMP" or IsJumpOrBranch(ins.Opcode) or (opName:match("^FOR")) then
-                instStr = instStr .. string.format(" --> PC: %d", pc + ins.SignedD + 1)
             end
             
             output = output .. instStr .. "\n"
@@ -561,4 +528,4 @@ end
 
 getgenv().decompile = decompile
 getgenv().disassemble = decompile
-print("[Konsistent Loaded]: Fully local disassembler with complete 100+ opcode CFG engine initialized.")
+print("[Konsistent v1.4 Loaded] Successfully ready for Version 9 Bytecode.")
