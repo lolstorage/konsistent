@@ -1,7 +1,6 @@
 --[[
-    Konsistent v1.4 (Bytecode Version 9 Compatible)
-    Written by: Lolstorage
-    Pure Offline Luau Decompiler & CFG Engine
+    Konsistent v1.4
+    lolstorage king blud
 --]]
 
 local Konsistent = {}
@@ -13,7 +12,6 @@ local LUA_TNUMBER = 2
 local LUA_TSTRING = 3
 local LUA_TVECTOR = 4
 
--- Complete Luau Opcode Enum Definitions (Version 9 Specification)
 local OpCodes = {
     [0]   = { name = "NOP",             format = "none" },
     [1]   = { name = "BREAK",           format = "none" },
@@ -96,9 +94,6 @@ local OpCodes = {
     [78]  = { name = "IDIVK",           format = "ABC" },
 }
 
--- ==========================================
--- BINARY STREAM READER (V9 COMPLIANT)
--- ==========================================
 local StreamReader = {}
 StreamReader.__index = StreamReader
 
@@ -159,9 +154,6 @@ function StreamReader:ReadString(len: number): string
     return str
 end
 
--- ==========================================
--- INSTRUCTION DECODER
--- ==========================================
 local function DecodeInstruction(ins: number)
     local op = bit32.band(ins, 0xFF)
     local a  = bit32.band(bit32.rshift(ins, 8), 0xFF)
@@ -196,9 +188,6 @@ local function IsJumpOrBranch(op: number): boolean
     return (op == 23) or (op >= 24 and op <= 37) or (op == 75) or (op == 76)
 end
 
--- ==========================================
--- CFG BUILDER ENGINE
--- ==========================================
 function Konsistent.BuildFullCFG(proto)
     local instructions = proto.Instructions
     local instructionCount = proto.InstructionCount
@@ -319,9 +308,6 @@ function Konsistent.BuildFullCFG(proto)
     return blocks
 end
 
--- ==========================================
--- DESERIALIZER ENGINE (V9 READY)
--- ==========================================
 function Konsistent.Deserialize(bytecode: string)
     local stream = StreamReader.new(bytecode)
     local version = stream:ReadByte()
@@ -453,9 +439,6 @@ function Konsistent.Deserialize(bytecode: string)
     }
 end
 
--- ==========================================
--- DISASSEMBLY & CFG WRITER
--- ==========================================
 local function decompile(scriptPath)
     assert(getscriptbytecode, "[Konsistent] getscriptbytecode required!")
     local success, bytecode = pcall(getscriptbytecode, scriptPath)
@@ -528,4 +511,4 @@ end
 
 getgenv().decompile = decompile
 getgenv().disassemble = decompile
-print("[Konsistent v1.4 Loaded] Successfully ready for Version 9 Bytecode.")
+print("konsistent loaded for fucking up shit.")
