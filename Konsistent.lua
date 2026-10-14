@@ -312,7 +312,7 @@ function Konsistent.Deserialize(bytecode: string)
     local stream = StreamReader.new(bytecode)
     local version = stream:ReadByte()
     if version == 0 then
-        error("[Konsistent] Invalid bytecode or compilation failure.")
+        error("sum FUCKING ERROR. Invalid bytecode or compilation failure.")
     end
     
     local typesVersion = 0
@@ -448,17 +448,17 @@ local function decompile(scriptPath)
     
     local successParse, result = pcall(Konsistent.Deserialize, bytecode)
     if not successParse then
-        return "-- [Konsistent Error]: Deserialization failed:\n--" .. tostring(result)
+        return "-- sum error or sum: Deserialization failed:\n--" .. tostring(result)
     end
     
-    local output = "-- [Konsistent v1.4 Engine - Version " .. tostring(result.BytecodeVersion) .. "]\n\n"
+    local output = "-- konsistent - Version " .. tostring(result.BytecodeVersion) .. "]\n\n"
     
     for id, proto in pairs(result.Protos) do
         output = output .. string.format("function %s() -- Proto %s (Line: %s)\n", proto.DebugName, tostring(id), tostring(proto.LineDefined))
-        output = output .. string.format("    -- Stack: %d | Params: %d | CFG Blocks: %d\n\n", proto.MaxStackSize, proto.NumParameters, #proto.CFGBlocks)
+        output = output .. string.format("    -- sum stack: %d | Params: %d | CFG Blocks: %d\n\n", proto.MaxStackSize, proto.NumParameters, #proto.CFGBlocks)
         
         for _, block in ipairs(proto.CFGBlocks) do
-            output = output .. string.format("    [CFG Block %d] StartPC: %d, EndPC: %d\n", block.ID, block.StartPC, block.EndPC)
+            output = output .. string.format("    [some CFG Block %d] StartPC: %d, EndPC: %d\n", block.ID, block.StartPC, block.EndPC)
         end
         output = output .. "\n"
         
